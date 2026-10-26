@@ -107,6 +107,7 @@ public class MainActivity extends AppCompatActivity {
             "document.head.appendChild(style);" +
 
             "const mediaCache = new Map();" +
+            "const userStoryCache = new Map();" +
             "function getCsrf() { const m = document.cookie.match(/csrftoken=([^;]+)/); return m ? m[1] : ''; }" +
             "function getHeaders() { return { 'X-IG-App-ID': '936619743392459', 'X-ASBD-ID': '129477', 'X-CSRFToken': getCsrf(), 'X-Requested-With': 'XMLHttpRequest' }; }" +
 
@@ -122,8 +123,10 @@ public class MainActivity extends AppCompatActivity {
 
             "function getBestUrl(item) {" +
             "  if (item.video_versions && item.video_versions.length > 0) return { url: item.video_versions[0].url, type: 'mp4' };" +
+            "  if (item.video_resources && item.video_resources.length > 0) return { url: item.video_resources[0].src, type: 'mp4' };" +
             "  if (item.video_url) return { url: item.video_url, type: 'mp4' };" +
             "  if (item.image_versions2 && item.image_versions2.candidates && item.image_versions2.candidates.length > 0) return { url: item.image_versions2.candidates[0].url, type: 'jpg' };" +
+            "  if (item.display_resources && item.display_resources.length > 0) return { url: item.display_resources[item.display_resources.length - 1].src, type: 'jpg' };" +
             "  if (item.display_url) return { url: item.display_url, type: 'jpg' };" +
             "  return null;" +
             "}" +
@@ -131,12 +134,13 @@ public class MainActivity extends AppCompatActivity {
             "function parseItem(item, owner) {" +
             "  const res = [];" +
             "  const user = item.user?.username || item.owner?.username || owner || 'insta_user';" +
+            "  const pk = String(item.pk || item.id || '').split('_')[0];" +
             "  if (item.carousel_media) {" +
-            "    item.carousel_media.forEach((s, i) => { const m = getBestUrl(s); if (m) res.push({ ...m, index: i + 1, username: user }); });" +
+            "    item.carousel_media.forEach((s, i) => { const m = getBestUrl(s); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk }); });" +
             "  } else if (item.edge_sidecar_to_children?.edges) {" +
-            "    item.edge_sidecar_to_children.edges.forEach((e, i) => { const m = getBestUrl(e.node || e); if (m) res.push({ ...m, index: i + 1, username: user }); });" +
+            "    item.edge_sidecar_to_children.edges.forEach((e, i) => { const m = getBestUrl(e.node || e); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk }); });" +
             "  } else {" +
-            "    const m = getBestUrl(item); if (m) res.push({ ...m, index: 1, username: user });" +
+            "    const m = getBestUrl(item); if (m) res.push({ ...m, index: 1, username: user, pk: pk });" +
             "  }" +
             "  return res;" +
             "}" +
@@ -144,20 +148,52 @@ public class MainActivity extends AppCompatActivity {
             "function extractObj(obj, owner) {" +
             "  if (!obj || typeof obj !== 'object') return;" +
             "  const curOwner = obj.user?.username || obj.owner?.username || owner;" +
-            "  if ((obj.id || obj.pk || obj.shortcode || obj.code) && (obj.image_versions2 || obj.video_versions || obj.carousel_media || obj.edge_sidecar_to_children || obj.display_url)) {" +
+            "  if ((obj.id || obj.pk || obj.shortcode || obj.code) && (obj.image_versions2 || obj.video_versions || obj.video_resources || obj.carousel_media || obj.edge_sidecar_to_children || obj.display_url)) {" +
             "    const code = obj.code || obj.shortcode;" +
             "    const pk = String(obj.pk || obj.id || '').split('_')[0];" +
             "    const parsed = parseItem(obj, curOwner);" +
-            "    if (parsed.length > 0) { if (code) mediaCache.set(code, parsed); if (pk) mediaCache.set(pk, parsed); }" +
+            "    if (parsed.length > 0) {" +
+            "      if (code) mediaCache.set(String(code), parsed);" +
+            "      if (pk) mediaCache.set(String(pk), parsed);" +
+            "      if (curOwner && pk) {" +
+            "        if (!userStoryCache.has(curOwner)) userStoryCache.set(curOwner, []);" +
+            "        const arr = userStoryCache.get(curOwner);" +
+            "        if (!arr.some(x => x.pk === pk)) arr.push(parsed[0]);" +
+            "      }" +
+            "    }" +
             "  }" +
             "  for (const k in obj) { if (Object.prototype.hasOwnProperty.call(obj, k) && typeof obj[k] === 'object') extractObj(obj[k], curOwner); }" +
             "}" +
 
+            // 1. 초기 렌더링된 JSON 스크립트 태그 파싱
+            "function scanPageScripts() {" +
+            "  document.querySelectorAll('script[type=\"application/json\"]').forEach(s => {" +
+            "    if (s.dataset.igdScanned) return;" +
+            "    s.dataset.igdScanned = '1';" +
+            "    try { extractObj(JSON.parse(s.textContent)); } catch(e){}" +
+            "  });" +
+            "}" +
+            "scanPageScripts();" +
+
+            // 2. fetch 후킹
             "const origFetch = window.fetch;" +
             "window.fetch = async function(...args) {" +
             "  const r = await origFetch.apply(this, args);" +
             "  try { r.clone().json().then(d => extractObj(d)).catch(()=>{}); } catch(e){}" +
             "  return r;" +
+            "};" +
+
+            // 3. XMLHttpRequest 후킹 (인스타그램 스토리/GraphQL 요청 가로채기)
+            "const origOpen = XMLHttpRequest.prototype.open;" +
+            "XMLHttpRequest.prototype.open = function() {" +
+            "  this.addEventListener('load', function() {" +
+            "    try {" +
+            "      if (this.responseText && this.responseText.startsWith('{')) {" +
+            "        extractObj(JSON.parse(this.responseText));" +
+            "      }" +
+            "    } catch(e){}" +
+            "  });" +
+            "  return origOpen.apply(this, arguments);" +
             "};" +
 
             "async function fetchByShortcode(sc) {" +
@@ -168,6 +204,48 @@ public class MainActivity extends AppCompatActivity {
             "    const r = await origFetch('https://www.instagram.com/api/v1/media/' + mid + '/info/', { headers: getHeaders(), credentials: 'include' });" +
             "    if (r.ok) { const j = await r.json(); extractObj(j); return mediaCache.get(sc) || mediaCache.get(mid); }" +
             "  } catch(e){}" +
+            "  return null;" +
+            "}" +
+
+            // 4. 스토리 전용 API 조회 함수
+            "async function fetchStoryMedia(sUser, sPk) {" +
+            "  scanPageScripts();" +
+            "  if (sPk && mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
+            "  if (sPk && /^\\d+$/.test(sPk)) {" +
+            "    try {" +
+            "      const r = await origFetch('https://www.instagram.com/api/v1/media/' + sPk + '/info/', { headers: getHeaders(), credentials: 'include' });" +
+            "      if (r.ok) {" +
+            "        const j = await r.json(); extractObj(j, sUser);" +
+            "        if (mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
+            "      }" +
+            "    } catch(e){}" +
+            "  }" +
+            "  try {" +
+            "    if (sUser === 'highlights' && sPk) {" +
+            "      const hr = await origFetch('https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight%3A' + sPk, { headers: getHeaders(), credentials: 'include' });" +
+            "      if (hr.ok) { const hj = await hr.json(); extractObj(hj); }" +
+            "    } else if (sUser && sUser !== 'story_user') {" +
+            "      const pr = await origFetch('https://www.instagram.com/api/v1/users/web_profile_info/?username=' + encodeURIComponent(sUser), { headers: getHeaders(), credentials: 'include' });" +
+            "      if (pr.ok) {" +
+            "        const pj = await pr.json();" +
+            "        const uid = pj?.data?.user?.id;" +
+            "        if (uid) {" +
+            "          const sr = await origFetch('https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=' + uid, { headers: getHeaders(), credentials: 'include' });" +
+            "          if (sr.ok) { const sj = await sr.json(); extractObj(sj, sUser); }" +
+            "        }" +
+            "      }" +
+            "    }" +
+            "  } catch(e){}" +
+            "  if (sPk && mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
+            "  const cachedList = userStoryCache.get(sUser);" +
+            "  if (cachedList && cachedList.length > 0) {" +
+            "    const hasVideo = Boolean(document.querySelector('video'));" +
+            "    if (hasVideo) {" +
+            "      const vItem = cachedList.find(x => x.type === 'mp4');" +
+            "      if (vItem) return vItem;" +
+            "    }" +
+            "    return cachedList[cachedList.length - 1];" +
+            "  }" +
             "  return null;" +
             "}" +
 
@@ -281,13 +359,35 @@ public class MainActivity extends AppCompatActivity {
             "      const sb = document.createElement('button'); sb.className = 'igd-story-dl-btn'; sb.textContent = '⬇️ 스토리 저장';" +
             "      sb.onclick = async (e) => {" +
             "        e.preventDefault(); e.stopPropagation();" +
+            "        sb.textContent = '⏳ 확인 중...';" +
             "        const pts = window.location.pathname.split('/').filter(Boolean);" +
             "        const sUser = pts[1] || 'story_user'; const sPk = pts[2];" +
-            "        if (sPk && mediaCache.has(sPk)) {" +
-            "          const c = mediaCache.get(sPk)[0]; dl(c.url, sUser, 'story_' + sPk + '.' + c.type); return;" +
+            "        const item = await fetchStoryMedia(sUser, sPk);" +
+            "        if (item && item.url) {" +
+            "          const targetUser = (sUser === 'highlights' && item.username) ? item.username : sUser;" +
+            "          dl(item.url, targetUser, 'story_' + (sPk || item.pk || Date.now()) + '.' + item.type);" +
+            "          sb.textContent = '✅ 저장 완료';" +
+            "          setTimeout(() => sb.textContent = '⬇️ 스토리 저장', 1500);" +
+            "          return;" +
             "        }" +
-            "        const v = document.querySelector('video'); if (v && v.src && !v.src.startsWith('blob:')) { dl(v.src, sUser, 'story_' + Date.now() + '.mp4'); return; }" +
-            "        const img = document.querySelector('img[srcset], img'); if (img && img.src) dl(img.src, sUser, 'story_' + Date.now() + '.jpg');" +
+            "        const v = document.querySelector('video');" +
+            "        if (v) {" +
+            "          const vSrc = (v.src && !v.src.startsWith('blob:')) ? v.src : (v.querySelector('source')?.src || '');" +
+            "          if (vSrc && !vSrc.startsWith('blob:')) {" +
+            "            dl(vSrc, sUser, 'story_' + Date.now() + '.mp4');" +
+            "            sb.textContent = '⬇️ 스토리 저장';" +
+            "            return;" +
+            "          }" +
+            "        }" +
+            "        let bestImg = null, maxArea = 0;" +
+            "        document.querySelectorAll('img').forEach(im => {" +
+            "          const area = (im.naturalWidth || im.width || 0) * (im.naturalHeight || im.height || 0);" +
+            "          if (im.src && area > maxArea && (im.clientWidth > 150)) { maxArea = area; bestImg = im; }" +
+            "        });" +
+            "        if (bestImg) {" +
+            "          dl(bestImg.src, sUser, 'story_' + Date.now() + '.jpg');" +
+            "        }" +
+            "        sb.textContent = '⬇️ 스토리 저장';" +
             "      };" +
             "      document.body.appendChild(sb);" +
             "    }" +
