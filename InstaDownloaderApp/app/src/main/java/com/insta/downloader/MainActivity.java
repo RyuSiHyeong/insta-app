@@ -3,9 +3,12 @@ package com.insta.downloader;
 import android.annotation.SuppressLint;
 import android.app.DownloadManager;
 import android.content.Context;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.view.Gravity;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -13,6 +16,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -23,9 +28,45 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        webView = new WebView(this);
-        setContentView(webView);
 
+        // 1. 웹뷰와 새로고침 버튼을 겹쳐서 배치할 FrameLayout 생성
+        FrameLayout rootLayout = new FrameLayout(this);
+        webView = new WebView(this);
+        rootLayout.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        // 2. 플로팅 새로고침(🔄) 버튼 생성 및 디자인
+        Button refreshBtn = new Button(this);
+        refreshBtn.setText("🔄");
+        refreshBtn.setTextSize(18f);
+        refreshBtn.setTextColor(Color.WHITE);
+        refreshBtn.setPadding(0, 0, 0, 0);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(Color.parseColor("#B3000000")); // 반투명 검정 배경
+        bg.setStroke(dpToPx(1), Color.parseColor("#55FFFFFF"));
+        refreshBtn.setBackground(bg);
+
+        int btnSize = dpToPx(44);
+        FrameLayout.LayoutParams btnParams = new FrameLayout.LayoutParams(btnSize, btnSize);
+        btnParams.gravity = Gravity.BOTTOM | Gravity.END;
+        btnParams.setMargins(0, 0, dpToPx(16), dpToPx(130)); // 하단 탭바 및 스토리 버튼 위쪽
+        refreshBtn.setLayoutParams(btnParams);
+
+        refreshBtn.setOnClickListener(v -> {
+            if (webView != null) {
+                Toast.makeText(MainActivity.this, "새로고침 중...", Toast.LENGTH_SHORT).show();
+                webView.reload();
+            }
+        });
+
+        rootLayout.addView(refreshBtn);
+        setContentView(rootLayout);
+
+        // 3. 웹뷰 설정
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -57,6 +98,10 @@ public class MainActivity extends AppCompatActivity {
         });
 
         webView.loadUrl("https://www.instagram.com/");
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
     private class AndroidBridge {
@@ -107,7 +152,7 @@ public class MainActivity extends AppCompatActivity {
             "document.head.appendChild(style);" +
 
             "const mediaCache = new Map();" +
-            "const userStoryCache = new Map();" +
+            "const reelCache = new Map();" +
             "function getCsrf() { const m = document.cookie.match(/csrftoken=([^;]+)/); return m ? m[1] : ''; }" +
             "function getHeaders() { return { 'X-IG-App-ID': '936619743392459', 'X-ASBD-ID': '129477', 'X-CSRFToken': getCsrf(), 'X-Requested-With': 'XMLHttpRequest' }; }" +
 
@@ -131,16 +176,22 @@ public class MainActivity extends AppCompatActivity {
             "  return null;" +
             "}" +
 
+            "function getThumbSig(url) {" +
+            "  if (!url || typeof url !== 'string') return '';" +
+            "  try { return (new URL(url).pathname.split('/').pop() || '').split('.')[0]; } catch(e) { return ''; }" +
+            "}" +
+
             "function parseItem(item, owner) {" +
             "  const res = [];" +
             "  const user = item.user?.username || item.owner?.username || owner || 'insta_user';" +
             "  const pk = String(item.pk || item.id || '').split('_')[0];" +
+            "  const sig = getThumbSig(item.image_versions2?.candidates?.[0]?.url || item.display_url || '');" +
             "  if (item.carousel_media) {" +
-            "    item.carousel_media.forEach((s, i) => { const m = getBestUrl(s); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk }); });" +
+            "    item.carousel_media.forEach((s, i) => { const m = getBestUrl(s); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk, thumbSig: sig }); });" +
             "  } else if (item.edge_sidecar_to_children?.edges) {" +
-            "    item.edge_sidecar_to_children.edges.forEach((e, i) => { const m = getBestUrl(e.node || e); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk }); });" +
+            "    item.edge_sidecar_to_children.edges.forEach((e, i) => { const m = getBestUrl(e.node || e); if (m) res.push({ ...m, index: i + 1, username: user, pk: pk, thumbSig: sig }); });" +
             "  } else {" +
-            "    const m = getBestUrl(item); if (m) res.push({ ...m, index: 1, username: user, pk: pk });" +
+            "    const m = getBestUrl(item); if (m) res.push({ ...m, index: 1, username: user, pk: pk, thumbSig: sig });" +
             "  }" +
             "  return res;" +
             "}" +
@@ -148,24 +199,22 @@ public class MainActivity extends AppCompatActivity {
             "function extractObj(obj, owner) {" +
             "  if (!obj || typeof obj !== 'object') return;" +
             "  const curOwner = obj.user?.username || obj.owner?.username || owner;" +
-            "  if ((obj.id || obj.pk || obj.shortcode || obj.code) && (obj.image_versions2 || obj.video_versions || obj.video_resources || obj.carousel_media || obj.edge_sidecar_to_children || obj.display_url)) {" +
+            "  if (obj.items && Array.isArray(obj.items) && (obj.id || obj.user)) {" +
+            "    const rKey = String(obj.id || obj.user?.username || '').replace('highlight:', '');" +
+            "    const rOwner = obj.user?.username || curOwner;" +
+            "    const rItems = [];" +
+            "    obj.items.forEach(it => { const p = parseItem(it, rOwner); if (p.length > 0) rItems.push(p[0]); });" +
+            "    if (rItems.length > 0) { if (rKey) reelCache.set(rKey, rItems); if (rOwner) reelCache.set(rOwner, rItems); }" +
+            "  }" +
+            "  if ((obj.id || obj.pk || obj.shortcode || obj.code) && (obj.image_versions2 || obj.video_versions || obj.video_resources || obj.carousel_media || obj.edge_sidecar_to_children || obj.display_url || obj.video_url)) {" +
             "    const code = obj.code || obj.shortcode;" +
             "    const pk = String(obj.pk || obj.id || '').split('_')[0];" +
             "    const parsed = parseItem(obj, curOwner);" +
-            "    if (parsed.length > 0) {" +
-            "      if (code) mediaCache.set(String(code), parsed);" +
-            "      if (pk) mediaCache.set(String(pk), parsed);" +
-            "      if (curOwner && pk) {" +
-            "        if (!userStoryCache.has(curOwner)) userStoryCache.set(curOwner, []);" +
-            "        const arr = userStoryCache.get(curOwner);" +
-            "        if (!arr.some(x => x.pk === pk)) arr.push(parsed[0]);" +
-            "      }" +
-            "    }" +
+            "    if (parsed.length > 0) { if (code) mediaCache.set(String(code), parsed); if (pk) mediaCache.set(String(pk), parsed); }" +
             "  }" +
             "  for (const k in obj) { if (Object.prototype.hasOwnProperty.call(obj, k) && typeof obj[k] === 'object') extractObj(obj[k], curOwner); }" +
             "}" +
 
-            // 1. 초기 렌더링된 JSON 스크립트 태그 파싱
             "function scanPageScripts() {" +
             "  document.querySelectorAll('script[type=\"application/json\"]').forEach(s => {" +
             "    if (s.dataset.igdScanned) return;" +
@@ -175,7 +224,6 @@ public class MainActivity extends AppCompatActivity {
             "}" +
             "scanPageScripts();" +
 
-            // 2. fetch 후킹
             "const origFetch = window.fetch;" +
             "window.fetch = async function(...args) {" +
             "  const r = await origFetch.apply(this, args);" +
@@ -183,20 +231,19 @@ public class MainActivity extends AppCompatActivity {
             "  return r;" +
             "};" +
 
-            // 3. XMLHttpRequest 후킹 (인스타그램 스토리/GraphQL 요청 가로채기)
             "const origOpen = XMLHttpRequest.prototype.open;" +
             "XMLHttpRequest.prototype.open = function() {" +
             "  this.addEventListener('load', function() {" +
             "    try {" +
-            "      if (this.responseText && this.responseText.startsWith('{')) {" +
-            "        extractObj(JSON.parse(this.responseText));" +
-            "      }" +
+            "      const txt = (this.responseText || '').replace(/^for\\s*\\(;;\\);\\s*/, '');" +
+            "      if (txt.startsWith('{')) extractObj(JSON.parse(txt));" +
             "    } catch(e){}" +
             "  });" +
             "  return origOpen.apply(this, arguments);" +
             "};" +
 
             "async function fetchByShortcode(sc) {" +
+            "  scanPageScripts();" +
             "  if (mediaCache.has(sc)) return mediaCache.get(sc);" +
             "  try {" +
             "    const mid = shortcodeToId(sc);" +
@@ -207,45 +254,74 @@ public class MainActivity extends AppCompatActivity {
             "  return null;" +
             "}" +
 
-            // 4. 스토리 전용 API 조회 함수
-            "async function fetchStoryMedia(sUser, sPk) {" +
+            "function getStoryDOMContext() {" +
+            "  const centerX = window.innerWidth / 2;" +
+            "  const videos = Array.from(document.querySelectorAll('video')).filter(v => !v.closest('article') && v.clientWidth > 100);" +
+            "  const imgs = Array.from(document.querySelectorAll('img')).filter(img => !img.closest('article') && img.clientWidth > 150 && img.clientHeight > 150);" +
+            "  let isVideo = false;" +
+            "  for (const v of videos) {" +
+            "    const r = v.getBoundingClientRect();" +
+            "    if (Math.abs((r.left + r.width / 2) - centerX) < window.innerWidth * 0.35) { isVideo = true; break; }" +
+            "  }" +
+            "  let bestImg = null, minDist = Infinity;" +
+            "  for (const img of imgs) {" +
+            "    const r = img.getBoundingClientRect();" +
+            "    const d = Math.abs((r.left + r.width / 2) - centerX);" +
+            "    if (d < minDist) { minDist = d; bestImg = img; }" +
+            "  }" +
+            "  let domUser = null;" +
+            "  const rev = ['p','reel','reels','stories','explore','direct','accounts'];" +
+            "  const links = Array.from(document.querySelectorAll('a[href^=\"/\"]')).filter(a => !a.closest('article'));" +
+            "  for (const a of links) {" +
+            "    const p = (a.getAttribute('href')||'').split('/').filter(Boolean);" +
+            "    if (p.length === 1 && !rev.includes(p[0])) { domUser = p[0]; break; }" +
+            "  }" +
+            "  return { isVideo, hintImgUrl: bestImg ? bestImg.src : null, domUsername: domUser };" +
+            "}" +
+
+            "function matchStory(list, sPk, hintImgUrl, isVideo) {" +
+            "  if (!Array.isArray(list) || list.length === 0) return null;" +
+            "  if (sPk) { const byPk = list.find(x => x.pk === String(sPk)); if (byPk) return byPk; }" +
+            "  const sig = getThumbSig(hintImgUrl);" +
+            "  if (sig) { const bySig = list.find(x => x.thumbSig && x.thumbSig === sig); if (bySig) return bySig; }" +
+            "  if (isVideo) { const vItem = list.find(x => x.type === 'mp4'); if (vItem) return vItem; }" +
+            "  return list[0];" +
+            "}" +
+
+            "async function fetchStoryMedia(sUser, sPk, ctx) {" +
             "  scanPageScripts();" +
-            "  if (sPk && mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
-            "  if (sPk && /^\\d+$/.test(sPk)) {" +
+            "  if (sUser !== 'highlights' && sPk && mediaCache.has(String(sPk))) return mediaCache.get(String(sPk))[0];" +
+            "  if (sUser !== 'highlights' && sPk && /^\\d+$/.test(String(sPk))) {" +
             "    try {" +
             "      const r = await origFetch('https://www.instagram.com/api/v1/media/' + sPk + '/info/', { headers: getHeaders(), credentials: 'include' });" +
-            "      if (r.ok) {" +
-            "        const j = await r.json(); extractObj(j, sUser);" +
-            "        if (mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
-            "      }" +
+            "      if (r.ok) { const j = await r.json(); extractObj(j, sUser); if (mediaCache.has(String(sPk))) return mediaCache.get(String(sPk))[0]; }" +
             "    } catch(e){}" +
+            "  }" +
+            "  const rKey = sUser === 'highlights' ? String(sPk || '') : String(sUser || '');" +
+            "  if (rKey && reelCache.has(rKey)) {" +
+            "    const m = matchStory(reelCache.get(rKey), sPk, ctx.hintImgUrl, ctx.isVideo);" +
+            "    if (m) return m;" +
             "  }" +
             "  try {" +
             "    if (sUser === 'highlights' && sPk) {" +
             "      const hr = await origFetch('https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight%3A' + sPk, { headers: getHeaders(), credentials: 'include' });" +
-            "      if (hr.ok) { const hj = await hr.json(); extractObj(hj); }" +
+            "      if (hr.ok) { const hj = await hr.json(); extractObj(hj); const m = matchStory(reelCache.get(String(sPk)), null, ctx.hintImgUrl, ctx.isVideo); if (m) return m; }" +
             "    } else if (sUser && sUser !== 'story_user') {" +
             "      const pr = await origFetch('https://www.instagram.com/api/v1/users/web_profile_info/?username=' + encodeURIComponent(sUser), { headers: getHeaders(), credentials: 'include' });" +
             "      if (pr.ok) {" +
-            "        const pj = await pr.json();" +
-            "        const uid = pj?.data?.user?.id;" +
+            "        const pj = await pr.json(); const uid = pj?.data?.user?.id;" +
             "        if (uid) {" +
             "          const sr = await origFetch('https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=' + uid, { headers: getHeaders(), credentials: 'include' });" +
-            "          if (sr.ok) { const sj = await sr.json(); extractObj(sj, sUser); }" +
+            "          if (sr.ok) {" +
+            "            const sj = await sr.json(); extractObj(sj, sUser);" +
+            "            if (sPk && mediaCache.has(String(sPk))) return mediaCache.get(String(sPk))[0];" +
+            "            const m = matchStory(reelCache.get(sUser) || reelCache.get(String(uid)), sPk, ctx.hintImgUrl, ctx.isVideo);" +
+            "            if (m) return m;" +
+            "          }" +
             "        }" +
             "      }" +
             "    }" +
             "  } catch(e){}" +
-            "  if (sPk && mediaCache.has(sPk)) return mediaCache.get(sPk)[0];" +
-            "  const cachedList = userStoryCache.get(sUser);" +
-            "  if (cachedList && cachedList.length > 0) {" +
-            "    const hasVideo = Boolean(document.querySelector('video'));" +
-            "    if (hasVideo) {" +
-            "      const vItem = cachedList.find(x => x.type === 'mp4');" +
-            "      if (vItem) return vItem;" +
-            "    }" +
-            "    return cachedList[cachedList.length - 1];" +
-            "  }" +
             "  return null;" +
             "}" +
 
@@ -359,33 +435,22 @@ public class MainActivity extends AppCompatActivity {
             "      const sb = document.createElement('button'); sb.className = 'igd-story-dl-btn'; sb.textContent = '⬇️ 스토리 저장';" +
             "      sb.onclick = async (e) => {" +
             "        e.preventDefault(); e.stopPropagation();" +
-            "        sb.textContent = '⏳ 확인 중...';" +
+            "        sb.textContent = '⏳ 추출 중...';" +
             "        const pts = window.location.pathname.split('/').filter(Boolean);" +
-            "        const sUser = pts[1] || 'story_user'; const sPk = pts[2];" +
-            "        const item = await fetchStoryMedia(sUser, sPk);" +
+            "        const sUser = pts[1] || 'story_user'; const sPk = pts[2] || null;" +
+            "        const ctx = getStoryDOMContext();" +
+            "        const item = await fetchStoryMedia(sUser, sPk, ctx);" +
             "        if (item && item.url) {" +
-            "          const targetUser = (sUser === 'highlights' && item.username) ? item.username : sUser;" +
-            "          dl(item.url, targetUser, 'story_' + (sPk || item.pk || Date.now()) + '.' + item.type);" +
+            "          const targetUser = (sUser === 'highlights') ? (item.username || ctx.domUsername || 'highlights') : (item.username || sUser);" +
+            "          const fileId = item.pk || sPk || Date.now();" +
+            "          dl(item.url, targetUser, 'story_' + fileId + '.' + item.type);" +
             "          sb.textContent = '✅ 저장 완료';" +
             "          setTimeout(() => sb.textContent = '⬇️ 스토리 저장', 1500);" +
             "          return;" +
             "        }" +
-            "        const v = document.querySelector('video');" +
-            "        if (v) {" +
-            "          const vSrc = (v.src && !v.src.startsWith('blob:')) ? v.src : (v.querySelector('source')?.src || '');" +
-            "          if (vSrc && !vSrc.startsWith('blob:')) {" +
-            "            dl(vSrc, sUser, 'story_' + Date.now() + '.mp4');" +
-            "            sb.textContent = '⬇️ 스토리 저장';" +
-            "            return;" +
-            "          }" +
-            "        }" +
-            "        let bestImg = null, maxArea = 0;" +
-            "        document.querySelectorAll('img').forEach(im => {" +
-            "          const area = (im.naturalWidth || im.width || 0) * (im.naturalHeight || im.height || 0);" +
-            "          if (im.src && area > maxArea && (im.clientWidth > 150)) { maxArea = area; bestImg = im; }" +
-            "        });" +
-            "        if (bestImg) {" +
-            "          dl(bestImg.src, sUser, 'story_' + Date.now() + '.jpg');" +
+            "        if (!ctx.isVideo && ctx.hintImgUrl) {" +
+            "          const targetUser = (sUser === 'highlights' && ctx.domUsername) ? ctx.domUsername : sUser;" +
+            "          dl(ctx.hintImgUrl, targetUser, 'story_' + (sPk || Date.now()) + '.jpg');" +
             "        }" +
             "        sb.textContent = '⬇️ 스토리 저장';" +
             "      };" +
